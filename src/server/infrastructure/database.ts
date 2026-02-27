@@ -39,8 +39,18 @@ db.exec(`
     explicacaoDidatica TEXT NOT NULL,
     codigoComErro TEXT,
     codigoCorreto TEXT,
+    origem TEXT DEFAULT 'manual',
     FOREIGN KEY (linguagemId) REFERENCES Linguagens(id)
   );
+
+  CREATE TABLE IF NOT EXISTS Configuracao (
+    chave TEXT PRIMARY KEY,
+    valor TEXT NOT NULL,
+    dataAtualizacao DATETIME DEFAULT CURRENT_TIMESTAMP
+  );
+
+  INSERT OR IGNORE INTO Configuracao (chave, valor) VALUES ('ia_requests_today', '0');
+  INSERT OR IGNORE INTO Configuracao (chave, valor) VALUES ('last_reset_date', CURRENT_DATE);
 
   CREATE TABLE IF NOT EXISTS PerguntaTags (
     perguntaId INTEGER,
@@ -84,83 +94,82 @@ db.exec(`
   );
 `);
 
-// Seed initial data if empty
+// Migration: Add origem column if it doesn't exist
+try {
+  const columns = db.prepare("PRAGMA table_info(Perguntas)").all() as any[];
+  const hasOrigem = columns.some(c => c.name === 'origem');
+  if (!hasOrigem) {
+    db.exec("ALTER TABLE Perguntas ADD COLUMN origem TEXT DEFAULT 'manual'");
+    console.log("Migration: Added 'origem' column to Perguntas table.");
+  }
+} catch (err) {
+  console.error("Migration error:", err);
+}
+
+// Seed initial data
 const linguagensCount = db.prepare("SELECT COUNT(*) as count FROM Linguagens").get() as { count: number };
 if (linguagensCount.count === 0) {
   const insertLinguagem = db.prepare("INSERT INTO Linguagens (nome) VALUES (?)");
-  const csharpId = insertLinguagem.run("C#").lastInsertRowid;
-  const sqlId = insertLinguagem.run("SQL Server").lastInsertRowid;
-  const reactId = insertLinguagem.run("React").lastInsertRowid;
-  const jsId = insertLinguagem.run("JavaScript").lastInsertRowid;
-  const webId = insertLinguagem.run("Web Fundamentals").lastInsertRowid;
+  db.exec("BEGIN");
+  insertLinguagem.run("C#");
+  insertLinguagem.run("SQL Server");
+  insertLinguagem.run("React");
+  insertLinguagem.run("JavaScript");
+  insertLinguagem.run("Web Fundamentals");
+  db.exec("COMMIT");
+}
 
+// Ensure Tags exist
+const tagsCount = db.prepare("SELECT COUNT(*) as count FROM Tags").get() as { count: number };
+if (tagsCount.count === 0) {
+  const linguagens = db.prepare("SELECT * FROM Linguagens").all() as any[];
   const insertTag = db.prepare("INSERT INTO Tags (nome, linguagemId) VALUES (?, ?)");
-  // C# Tags
-  const tagSintaxe = insertTag.run("Sintaxe", csharpId).lastInsertRowid;
-  const tagPoo = insertTag.run("POO", csharpId).lastInsertRowid;
-  const tagLinq = insertTag.run("LINQ", csharpId).lastInsertRowid;
-  // SQL Tags
-  const tagSelect = insertTag.run("SELECT", sqlId).lastInsertRowid;
-  const tagJoin = insertTag.run("JOIN", sqlId).lastInsertRowid;
-  const tagProc = insertTag.run("Procedures", sqlId).lastInsertRowid;
-  // React Tags
-  const tagHooks = insertTag.run("Hooks", reactId).lastInsertRowid;
-  const tagEstado = insertTag.run("Estado", reactId).lastInsertRowid;
-  // Web Tags
-  const tagHttp = insertTag.run("HTTP", webId).lastInsertRowid;
-  const tagCss = insertTag.run("CSS", webId).lastInsertRowid;
+  
+  linguagens.forEach(l => {
+    if (l.nome === "C#") {
+      insertTag.run("Sintaxe", l.id);
+      insertTag.run("POO", l.id);
+      insertTag.run("LINQ", l.id);
+    } else if (l.nome === "SQL Server") {
+      insertTag.run("SELECT", l.id);
+      insertTag.run("JOIN", l.id);
+      insertTag.run("Procedures", l.id);
+    } else if (l.nome === "React") {
+      insertTag.run("Hooks", l.id);
+      insertTag.run("Estado", l.id);
+    } else if (l.nome === "Web Fundamentals") {
+      insertTag.run("HTTP", l.id);
+      insertTag.run("CSS", l.id);
+    }
+  });
+}
 
-  // Seed some questions
+// Ensure some basic questions exist for each language
+const questionsCount = db.prepare("SELECT COUNT(*) as count FROM Perguntas").get() as { count: number };
+if (questionsCount.count < 10) {
+  const linguagens = db.prepare("SELECT * FROM Linguagens").all() as any[];
   const insertPergunta = db.prepare(`
     INSERT INTO Perguntas (linguagemId, tipo, dificuldade, enunciado, explicacaoDidatica)
     VALUES (?, ?, ?, ?, ?)
   `);
   const insertAlternativa = db.prepare("INSERT INTO Alternativas (perguntaId, texto, correta) VALUES (?, ?, ?)");
-  const insertPerguntaTag = db.prepare("INSERT INTO PerguntaTags (perguntaId, tagId) VALUES (?, ?)");
+  
+  linguagens.forEach(l => {
+    if (l.nome === "SQL Server") {
+      const q1 = insertPergunta.run(l.id, "multipla_escolha", 1, "Qual comando SQL para filtrar todos os produtos?", "O comando SELECT * seleciona todas as colunas de uma tabela.").lastInsertRowid;
+      insertAlternativa.run(q1, "SELECT * FROM Produtos", 1);
+      insertAlternativa.run(q1, "GET ALL FROM Produtos", 0);
 
-  // --- WEB FUNDAMENTALS ---
-  const qWeb1 = insertPergunta.run(webId, "multipla_escolha", 1, "O que é o protocolo HTTP?", "HTTP é a base da comunicação na web, definindo como mensagens são formatadas e transmitidas.").lastInsertRowid;
-  insertAlternativa.run(qWeb1, "HyperText Transfer Protocol", 1);
-  insertAlternativa.run(qWeb1, "Hyperlink Text Tool Process", 0);
-  insertPerguntaTag.run(qWeb1, tagHttp);
-
-  const qWeb2 = insertPergunta.run(webId, "multipla_escolha", 2, "Qual a principal diferença entre HTTP e HTTPS?", "O 'S' no HTTPS significa Secure, indicando que os dados são criptografados via SSL/TLS.").lastInsertRowid;
-  insertAlternativa.run(qWeb2, "HTTPS possui criptografia (SSL/TLS)", 1);
-  insertAlternativa.run(qWeb2, "HTTP é mais rápido que HTTPS", 0);
-  insertPerguntaTag.run(qWeb2, tagHttp);
-
-  const qWeb3 = insertPergunta.run(webId, "multipla_escolha", 1, "O que é FlexBox no CSS?", "Flexbox é um modelo de layout unidimensional para organizar itens em linhas ou colunas.").lastInsertRowid;
-  insertAlternativa.run(qWeb3, "Um modelo de layout para alinhar itens em containers", 1);
-  insertAlternativa.run(qWeb3, "Uma biblioteca JavaScript de animação", 0);
-  insertPerguntaTag.run(qWeb3, tagCss);
-
-  // --- SQL SERVER ---
-  const qSql1 = insertPergunta.run(sqlId, "multipla_escolha", 1, "Qual comando SQL para filtrar todos os produtos?", "O comando SELECT * seleciona todas as colunas de uma tabela.").lastInsertRowid;
-  insertAlternativa.run(qSql1, "SELECT * FROM Produtos", 1);
-  insertAlternativa.run(qSql1, "GET ALL FROM Produtos", 0);
-  insertPerguntaTag.run(qSql1, tagSelect);
-
-  const qSql2 = insertPergunta.run(sqlId, "multipla_escolha", 2, "Como filtrar produtos que contenham 'bolacha' na descrição?", "O operador LIKE com '%' permite buscar padrões dentro de strings.").lastInsertRowid;
-  insertAlternativa.run(qSql2, "SELECT * FROM Produtos WHERE Descricao LIKE '%bolacha%'", 1);
-  insertAlternativa.run(qSql2, "SELECT * FROM Produtos WHERE Descricao = 'bolacha'", 0);
-  insertPerguntaTag.run(qSql2, tagSelect);
-
-  // --- C# ---
-  const qCs1 = insertPergunta.run(csharpId, "multipla_escolha", 2, "Quais são os 4 pilares da POO?", "Abstração, Encapsulamento, Herança e Polimorfismo são os fundamentos da Orientação a Objetos.").lastInsertRowid;
-  insertAlternativa.run(qCs1, "Abstração, Encapsulamento, Herança e Polimorfismo", 1);
-  insertAlternativa.run(qCs1, "Classes, Objetos, Métodos e Atributos", 0);
-  insertPerguntaTag.run(qCs1, tagPoo);
-
-  const qCs2 = insertPergunta.run(csharpId, "multipla_escolha", 3, "O que é LINQ em C#?", "Language Integrated Query permite realizar consultas em coleções de dados usando uma sintaxe similar ao SQL.").lastInsertRowid;
-  insertAlternativa.run(qCs2, "Uma forma de realizar consultas em coleções de dados", 1);
-  insertAlternativa.run(qCs2, "Um framework para criação de interfaces gráficas", 0);
-  insertPerguntaTag.run(qCs2, tagLinq);
-
-  // --- REACT ---
-  const qRe1 = insertPergunta.run(reactId, "multipla_escolha", 2, "O que são React Hooks?", "Hooks são funções que permitem 'ligar' o estado e o ciclo de vida do React em componentes funcionais.").lastInsertRowid;
-  insertAlternativa.run(qRe1, "Funções para usar estado em componentes funcionais", 1);
-  insertAlternativa.run(qRe1, "Plugins externos para o React", 0);
-  insertPerguntaTag.run(qRe1, tagHooks);
+      const q2 = insertPergunta.run(l.id, "multipla_escolha", 2, "Como filtrar produtos que contenham 'bolacha' na descrição?", "O operador LIKE permite busca parcial.").lastInsertRowid;
+      insertAlternativa.run(q2, "SELECT * FROM Produtos WHERE Descricao LIKE '%bolacha%'", 1);
+      insertAlternativa.run(q2, "SELECT * FROM Produtos WHERE Descricao = 'bolacha'", 0);
+      
+      const q3 = insertPergunta.run(l.id, "multipla_escolha", 2, "O que é um Primary Key?", "Identificador único.").lastInsertRowid;
+      insertAlternativa.run(q3, "Identificador único", 1);
+      insertAlternativa.run(q3, "Uma senha", 0);
+    }
+    // Add more for others if needed, but SQL is what user is testing
+  });
 }
 
 export default db;

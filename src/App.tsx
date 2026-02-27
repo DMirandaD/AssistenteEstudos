@@ -1,4 +1,4 @@
-import { useState, useEffect } from 'react';
+import React, { useState, useEffect } from 'react';
 import { motion, AnimatePresence } from 'motion/react';
 import { 
   Code2, 
@@ -18,7 +18,6 @@ import {
   Sun,
   Moon
 } from 'lucide-react';
-import { GeminiService } from './services/geminiProvider';
 
 // --- Types ---
 interface Usuario {
@@ -69,6 +68,31 @@ const Button = ({ children, onClick, variant = 'primary', className = '', disabl
   );
 };
 
+const Tooltip = ({ children, text }: { children: React.ReactNode; text: string }) => {
+  const [show, setShow] = useState(false);
+
+  return (
+    <div className="relative flex flex-col items-center flex-1" 
+         onMouseEnter={() => setShow(true)} 
+         onMouseLeave={() => setShow(false)}>
+      {children}
+      <AnimatePresence>
+        {show && (
+          <motion.div
+            initial={{ opacity: 0, y: 10, scale: 0.95 }}
+            animate={{ opacity: 1, y: 0, scale: 1 }}
+            exit={{ opacity: 0, y: 10, scale: 0.95 }}
+            className="absolute bottom-full mb-2 z-[100] w-40 p-2 bg-slate-800 dark:bg-slate-700 text-white text-[10px] leading-tight rounded-lg shadow-xl pointer-events-none text-center font-medium"
+          >
+            {text}
+            <div className="absolute top-full left-1/2 -translate-x-1/2 border-4 border-transparent border-t-slate-800 dark:border-t-slate-700" />
+          </motion.div>
+        )}
+      </AnimatePresence>
+    </div>
+  );
+};
+
 const Card = ({ children, className = '' }: any) => (
   <div className={`bg-white dark:bg-slate-800 rounded-2xl border border-gray-100 dark:border-slate-700 shadow-sm p-6 ${className}`}>
     {children}
@@ -84,6 +108,7 @@ export default function App() {
   const [selectedLang, setSelectedLang] = useState<number | null>(null);
   const [modo, setModo] = useState<'sessao_fixa' | 'livre'>('sessao_fixa');
   const [tipoEstudo, setTipoEstudo] = useState<'manual' | 'inteligente'>('manual');
+  const [quantidadePerguntas, setQuantidadePerguntas] = useState(12);
   
   const [currentSessao, setCurrentSessao] = useState<Sessao | null>(null);
   const [perguntas, setPerguntas] = useState<Pergunta[]>([]);
@@ -92,6 +117,7 @@ export default function App() {
   const [feedback, setFeedback] = useState<{ correct: boolean; message: string } | null>(null);
   const [startTime, setStartTime] = useState(0);
   const [isGenerating, setIsGenerating] = useState(false);
+  const [fallbackMessage, setFallbackMessage] = useState<string | null>(null);
   const [isDarkMode, setIsDarkMode] = useState(() => {
     const saved = localStorage.getItem('devtrain_dark_mode');
     return saved ? JSON.parse(saved) : false;
@@ -107,15 +133,30 @@ export default function App() {
   }, [isDarkMode]);
 
   useEffect(() => {
-    fetch('/api/linguagens').then(res => res.json()).then(setLinguagens);
+    const fetchLinguagens = () => {
+      fetch('/api/linguagens')
+        .then(res => res.json())
+        .then(data => {
+          if (Array.isArray(data) && data.length > 0) {
+            setLinguagens(data);
+          }
+        })
+        .catch(err => console.error("Erro ao buscar linguagens:", err));
+    };
+
+    if (linguagens.length === 0) {
+      fetchLinguagens();
+    }
+    
     const savedUser = localStorage.getItem('devtrain_user');
     if (savedUser) setUser(JSON.parse(savedUser));
-  }, []);
+  }, [view]); // Re-check when view changes
 
   const handleStart = async (nome: string) => {
     if (!selectedLang) return;
     
     setIsGenerating(true);
+    setFallbackMessage(null);
     try {
       let activeUser = user;
       if (!activeUser || activeUser.nome !== nome) {
@@ -129,22 +170,27 @@ export default function App() {
         localStorage.setItem('devtrain_user', JSON.stringify(activeUser));
       }
 
-      // Se for modo inteligente, vamos gerar perguntas com IA baseadas nos pontos fracos
+      // Se for modo inteligente, vamos tentar gerar com IA no backend
       if (tipoEstudo === 'inteligente') {
         const dashRes = await fetch(`/api/dashboard/${activeUser!.id}`);
         const dashData = await dashRes.json();
         const weakTags = dashData.pontosFracos.map((p: any) => p.tag);
         const langName = linguagens.find(l => l.id === selectedLang)?.nome || "Programação";
 
-        const aiQuestions = await GeminiService.gerarPerguntas(langName, weakTags.length > 0 ? weakTags : ["Básico"], 3);
-        
-        if (aiQuestions.length > 0) {
-          // Salva no banco para persistência e estatísticas
-          await fetch('/api/perguntas/bulk', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ linguagemId: selectedLang, perguntas: aiQuestions })
-          });
+        const aiRes = await fetch('/api/ia/gerar', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            linguagemId: selectedLang,
+            linguagemNome: langName,
+            tags: weakTags.length > 0 ? weakTags : ["Básico"],
+            dificuldade: 3
+          })
+        });
+
+        const aiData = await aiRes.json();
+        if (aiData.fallback) {
+          setFallbackMessage(aiData.message);
         }
       }
 
@@ -156,13 +202,13 @@ export default function App() {
           linguagemId: selectedLang,
           modo,
           tipoEstudo,
-          quantidadePerguntas: modo === 'sessao_fixa' ? 10 : null
+          quantidadePerguntas: modo === 'sessao_fixa' ? quantidadePerguntas : null
         })
       });
       const sessao = await sessaoRes.json();
       setCurrentSessao(sessao);
 
-      const perguntasRes = await fetch(`/api/perguntas?linguagemId=${selectedLang}&modo=${modo}&tipoEstudo=${tipoEstudo}&usuarioId=${activeUser!.id}`);
+      const perguntasRes = await fetch(`/api/perguntas?linguagemId=${selectedLang}&modo=${modo}&tipoEstudo=${tipoEstudo}&usuarioId=${activeUser!.id}&quantidade=${quantidadePerguntas}`);
       const data = await perguntasRes.json();
       
       const fullPerguntas = await Promise.all(data.map((p: any) => fetch(`/api/perguntas/${p.id}`).then(r => r.json())));
@@ -261,6 +307,17 @@ export default function App() {
 
       <main className="max-w-3xl mx-auto px-6 py-12">
         <AnimatePresence mode="wait">
+          {fallbackMessage && (
+            <motion.div 
+              initial={{ opacity: 0, y: -10 }}
+              animate={{ opacity: 1, y: 0 }}
+              exit={{ opacity: 0 }}
+              className="mb-6 p-3 bg-amber-50 dark:bg-amber-900/20 border border-amber-200 dark:border-amber-800 rounded-xl text-amber-800 dark:text-amber-200 text-sm flex items-center gap-2"
+            >
+              <Info size={16} /> {fallbackMessage}
+            </motion.div>
+          )}
+
           {view === 'home' && (
             <HomeView 
               user={user} 
@@ -271,6 +328,8 @@ export default function App() {
               setModo={setModo}
               tipoEstudo={tipoEstudo}
               setTipoEstudo={setTipoEstudo}
+              quantidadePerguntas={quantidadePerguntas}
+              setQuantidadePerguntas={setQuantidadePerguntas}
               onStart={handleStart} 
               isGenerating={isGenerating}
             />
@@ -293,7 +352,13 @@ export default function App() {
             <SummaryView 
               sessao={currentSessao} 
               totalPerguntas={perguntas.length}
-              onBack={() => setView('home')} 
+              onBack={() => {
+                setPerguntas([]);
+                setCurrentIdx(0);
+                setSelectedAlt(null);
+                setFeedback(null);
+                setView('home');
+              }} 
             />
           )}
 
@@ -312,7 +377,7 @@ export default function App() {
 
 // --- View Components ---
 
-function HomeView({ user, linguagens, selectedLang, setSelectedLang, modo, setModo, tipoEstudo, setTipoEstudo, onStart, isGenerating }: any) {
+function HomeView({ user, linguagens, selectedLang, setSelectedLang, modo, setModo, tipoEstudo, setTipoEstudo, quantidadePerguntas, setQuantidadePerguntas, onStart, isGenerating }: any) {
   const [nome, setNome] = useState(user?.nome || '');
 
   return (
@@ -323,7 +388,7 @@ function HomeView({ user, linguagens, selectedLang, setSelectedLang, modo, setMo
       className="space-y-8"
     >
       <div className="text-center space-y-2">
-        <h1 className="text-4xl font-extrabold tracking-tight text-slate-900 dark:text-white">Treino Inteligente</h1>
+        <h1 className="text-4xl font-extrabold tracking-tight text-slate-900 dark:text-white"></h1>
         <p className="text-slate-500 dark:text-slate-400 text-lg">Evolua sua lógica com feedback adaptativo.</p>
       </div>
 
@@ -342,58 +407,92 @@ function HomeView({ user, linguagens, selectedLang, setSelectedLang, modo, setMo
         <div className="space-y-2">
           <label className="text-sm font-semibold text-slate-700 dark:text-slate-300 uppercase tracking-wider">Linguagem</label>
           <div className="grid grid-cols-2 sm:grid-cols-3 gap-3">
-            {linguagens.map((l: any) => (
-              <button
-                key={l.id}
-                onClick={() => setSelectedLang(l.id)}
-                className={`px-4 py-3 rounded-xl border text-sm font-medium transition-all ${
-                  selectedLang === l.id 
-                    ? 'bg-indigo-50 dark:bg-indigo-900/30 border-indigo-600 dark:border-indigo-500 text-indigo-600 dark:text-indigo-400' 
-                    : 'bg-white dark:bg-slate-800 border-slate-200 dark:border-slate-700 text-slate-600 dark:text-slate-400 hover:border-slate-300 dark:hover:border-slate-600'
-                }`}
-              >
-                {l.nome}
-              </button>
-            ))}
+            {linguagens.length === 0 ? (
+              <div className="col-span-full text-center py-4 text-slate-400 animate-pulse">Carregando linguagens...</div>
+            ) : (
+              linguagens.map((l: any) => (
+                <button
+                  key={l.id}
+                  onClick={() => setSelectedLang(l.id)}
+                  className={`px-4 py-3 rounded-xl border text-sm font-medium transition-all ${
+                    selectedLang === l.id 
+                      ? 'bg-indigo-50 dark:bg-indigo-900/30 border-indigo-600 dark:border-indigo-500 text-indigo-600 dark:text-indigo-400' 
+                      : 'bg-white dark:bg-slate-800 border-slate-200 dark:border-slate-700 text-slate-600 dark:text-slate-400 hover:border-slate-300 dark:hover:border-slate-600'
+                  }`}
+                >
+                  {l.nome}
+                </button>
+              ))
+            )}
           </div>
         </div>
 
         <div className="grid grid-cols-2 gap-4">
           <div className="space-y-2">
             <label className="text-sm font-semibold text-slate-700 dark:text-slate-300 uppercase tracking-wider">Modo</label>
-            <div className="flex bg-slate-100 dark:bg-slate-900 p-1 rounded-xl">
-              <button 
-                onClick={() => setModo('sessao_fixa')}
-                className={`flex-1 py-2 text-xs font-bold rounded-lg transition-all ${modo === 'sessao_fixa' ? 'bg-white dark:bg-slate-800 shadow-sm text-indigo-600 dark:text-indigo-400' : 'text-slate-500 dark:text-slate-500'}`}
-              >
-                FIXO (10)
-              </button>
-              <button 
-                onClick={() => setModo('livre')}
-                className={`flex-1 py-2 text-xs font-bold rounded-lg transition-all ${modo === 'livre' ? 'bg-white dark:bg-slate-800 shadow-sm text-indigo-600 dark:text-indigo-400' : 'text-slate-500 dark:text-slate-500'}`}
-              >
-                LIVRE
-              </button>
+            <div className="flex bg-slate-100 dark:bg-slate-900 p-1 rounded-xl gap-1">
+              <Tooltip text="Sessão com número definido de perguntas e resumo final.">
+                <button 
+                  onClick={() => setModo('sessao_fixa')}
+                  className={`w-full py-2 text-xs font-bold rounded-lg transition-all ${modo === 'sessao_fixa' ? 'bg-white dark:bg-slate-800 shadow-sm text-indigo-600 dark:text-indigo-400' : 'text-slate-500 dark:text-slate-500'}`}
+                >
+                  FIXO
+                </button>
+              </Tooltip>
+              <Tooltip text="Treino contínuo sem fim definido. Pratique livremente.">
+                <button 
+                  onClick={() => setModo('livre')}
+                  className={`w-full py-2 text-xs font-bold rounded-lg transition-all ${modo === 'livre' ? 'bg-white dark:bg-slate-800 shadow-sm text-indigo-600 dark:text-indigo-400' : 'text-slate-500 dark:text-slate-500'}`}
+                >
+                  LIVRE
+                </button>
+              </Tooltip>
             </div>
           </div>
           <div className="space-y-2">
             <label className="text-sm font-semibold text-slate-700 dark:text-slate-300 uppercase tracking-wider">Tipo</label>
-            <div className="flex bg-slate-100 dark:bg-slate-900 p-1 rounded-xl">
-              <button 
-                onClick={() => setTipoEstudo('manual')}
-                className={`flex-1 py-2 text-xs font-bold rounded-lg transition-all ${tipoEstudo === 'manual' ? 'bg-white dark:bg-slate-800 shadow-sm text-indigo-600 dark:text-indigo-400' : 'text-slate-500 dark:text-slate-500'}`}
-              >
-                MANUAL
-              </button>
-              <button 
-                onClick={() => setTipoEstudo('inteligente')}
-                className={`flex-1 py-2 text-xs font-bold rounded-lg transition-all ${tipoEstudo === 'inteligente' ? 'bg-white dark:bg-slate-800 shadow-sm text-indigo-600 dark:text-indigo-400' : 'text-slate-500 dark:text-slate-500'}`}
-              >
-                INTELIGENTE
-              </button>
+            <div className="flex bg-slate-100 dark:bg-slate-900 p-1 rounded-xl gap-1">
+              <Tooltip text="Utiliza perguntas da biblioteca local do sistema.">
+                <button 
+                  onClick={() => setTipoEstudo('manual')}
+                  className={`w-full py-2 text-xs font-bold rounded-lg transition-all ${tipoEstudo === 'manual' ? 'bg-white dark:bg-slate-800 shadow-sm text-indigo-600 dark:text-indigo-400' : 'text-slate-500 dark:text-slate-500'}`}
+                >
+                  MANUAL
+                </button>
+              </Tooltip>
+              <Tooltip text="A IA gera perguntas focadas nos seus pontos fracos.">
+                <button 
+                  onClick={() => setTipoEstudo('inteligente')}
+                  className={`w-full py-2 text-xs font-bold rounded-lg transition-all ${tipoEstudo === 'inteligente' ? 'bg-white dark:bg-slate-800 shadow-sm text-indigo-600 dark:text-indigo-400' : 'text-slate-500 dark:text-slate-500'}`}
+                >
+                  INTELIGENTE
+                </button>
+              </Tooltip>
             </div>
           </div>
         </div>
+
+        {modo === 'sessao_fixa' && (
+          <div className="space-y-2">
+            <label className="text-sm font-semibold text-slate-700 dark:text-slate-300 uppercase tracking-wider flex justify-between">
+              Quantidade de Perguntas
+              <span className="text-indigo-600 dark:text-indigo-400 font-bold">{quantidadePerguntas}</span>
+            </label>
+            <input 
+              type="range" 
+              min="12" 
+              max="50" 
+              step="1"
+              value={quantidadePerguntas}
+              onChange={(e) => setQuantidadePerguntas(parseInt(e.target.value))}
+              className="w-full h-2 bg-slate-200 dark:bg-slate-700 rounded-lg appearance-none cursor-pointer accent-indigo-600"
+            />
+            <div className="flex justify-between text-[10px] text-slate-400 font-bold uppercase">
+              <span>Mín: 12</span>
+              <span>Máx: 50</span>
+            </div>
+          </div>
+        )}
 
         <Button 
           onClick={() => onStart(nome)} 
@@ -525,7 +624,7 @@ function SummaryView({ sessao, totalPerguntas, onBack }: any) {
       </div>
 
       <div className="flex flex-col gap-3">
-        <Button onClick={() => window.location.reload()} className="w-full">Treinar Novamente</Button>
+        <Button onClick={onBack} className="w-full">Treinar Novamente</Button>
         <Button onClick={onBack} variant="ghost" className="w-full">Voltar ao Início</Button>
       </div>
     </motion.div>

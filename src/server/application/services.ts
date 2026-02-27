@@ -26,22 +26,23 @@ export class DevTrainService {
   }
 
   // Perguntas
-  static getPerguntas(linguagemId: number, modo: string, tipoEstudo: string, usuarioId: number): Pergunta[] {
+  static getPerguntas(linguagemId: number, modo: string, tipoEstudo: string, usuarioId: number, quantidade?: number): Pergunta[] {
     if (tipoEstudo === "inteligente") {
-      return this.getIntelligentPerguntas(linguagemId, usuarioId);
+      return this.getIntelligentPerguntas(linguagemId, usuarioId, modo, quantidade);
     }
     
     // Manual/Random mode
+    const limit = quantidade || (modo === 'livre' ? 50 : 12);
     const query = `
       SELECT p.* FROM Perguntas p 
       WHERE p.linguagemId = ? 
       ORDER BY RANDOM() 
-      LIMIT 10
+      LIMIT ?
     `;
-    return db.prepare(query).all(linguagemId) as Pergunta[];
+    return db.prepare(query).all(linguagemId, limit) as Pergunta[];
   }
 
-  private static getIntelligentPerguntas(linguagemId: number, usuarioId: number): Pergunta[] {
+  private static getIntelligentPerguntas(linguagemId: number, usuarioId: number, modo: string = 'sessao_fixa', quantidade?: number): Pergunta[] {
     // 1. Get performance per tag for this user
     const tagStats = db.prepare(`
       SELECT t.id, t.nome, 
@@ -82,11 +83,11 @@ export class DevTrainService {
       return { ...q, weight: maxWeight };
     });
 
-    // 4. Weighted random selection (simplified: sort by weight and take top or random sample)
-    // Sort by weight descending (weakest tags first)
+    // 4. Weighted random selection
+    const limit = quantidade || (modo === 'livre' ? 50 : 12);
     return weightedQuestions
       .sort((a, b) => b.weight - a.weight + (Math.random() - 0.5))
-      .slice(0, 10) as Pergunta[];
+      .slice(0, limit) as Pergunta[];
   }
 
   static getPergunta(id: number): any {
@@ -178,10 +179,10 @@ export class DevTrainService {
     return db.prepare("SELECT * FROM Linguagens").all() as Linguagem[];
   }
 
-  static salvarPerguntasBulk(linguagemId: number, perguntas: any[]) {
+  static salvarPerguntasBulk(linguagemId: number, perguntas: any[], origem: string = 'manual') {
     const insertPergunta = db.prepare(`
-      INSERT INTO Perguntas (linguagemId, tipo, dificuldade, enunciado, explicacaoDidatica)
-      VALUES (?, ?, ?, ?, ?)
+      INSERT INTO Perguntas (linguagemId, tipo, dificuldade, enunciado, explicacaoDidatica, origem)
+      VALUES (?, ?, ?, ?, ?, ?)
     `);
     const insertAlternativa = db.prepare(`
       INSERT INTO Alternativas (perguntaId, texto, correta)
@@ -203,7 +204,8 @@ export class DevTrainService {
           p.tipo,
           p.dificuldade,
           p.enunciado,
-          p.explicacaoDidatica
+          p.explicacaoDidatica,
+          origem
         );
         const perguntaId = result.lastInsertRowid as number;
         savedIds.push(perguntaId);
@@ -230,5 +232,28 @@ export class DevTrainService {
 
     transaction(perguntas);
     return savedIds;
+  }
+
+  static checkAndIncrementIARateLimit(): boolean {
+    const limit = 100; // Daily limit
+    
+    // Check if we need to reset the counter
+    const lastReset = db.prepare("SELECT valor FROM Configuracao WHERE chave = 'last_reset_date'").get() as any;
+    const today = new Date().toISOString().split('T')[0];
+    
+    if (lastReset.valor !== today) {
+      db.prepare("UPDATE Configuracao SET valor = '0', dataAtualizacao = CURRENT_TIMESTAMP WHERE chave = 'ia_requests_today'").run();
+      db.prepare("UPDATE Configuracao SET valor = ?, dataAtualizacao = CURRENT_TIMESTAMP WHERE chave = 'last_reset_date'").run(today);
+    }
+    
+    const currentRequests = db.prepare("SELECT valor FROM Configuracao WHERE chave = 'ia_requests_today'").get() as any;
+    const count = parseInt(currentRequests.valor);
+    
+    if (count >= limit) {
+      return false;
+    }
+    
+    db.prepare("UPDATE Configuracao SET valor = ?, dataAtualizacao = CURRENT_TIMESTAMP WHERE chave = 'ia_requests_today'").run((count + 1).toString());
+    return true;
   }
 }

@@ -9,13 +9,19 @@ Esta é uma plataforma base completa para treino de programação, focada em fee
 - **Banco de Dados**: SQLite (via `better-sqlite3`) para persistência real e simplicidade de setup.
 - **Linguagem**: TypeScript em todo o projeto.
 
-## 🧠 Motor Inteligente
+## 🧠 Arquitetura Híbrida Inteligente
 
-O sistema implementa um algoritmo de recomendação baseado em desempenho por Tag:
-1. Calcula a taxa de acerto do usuário para cada micro-habilidade (Tag).
-2. Classifica as tags em: **Forte** (>=80%), **Médio** (60-79%) e **Fraco** (<60%).
-3. Atribui pesos (Forte: 1, Médio: 2, Fraco: 4).
-4. No modo **Inteligente**, o sistema prioriza perguntas que contenham tags com maior peso (pontos fracos).
+O sistema agora utiliza uma abordagem híbrida para geração de perguntas:
+1.  **Geração em Tempo Real (Groq)**: Se houver uma `GROQ_API_KEY` configurada e o limite diário (100 requisições) não tiver sido atingido, o sistema gera perguntas inéditas via IA.
+2.  **Fallback Automático**: Caso o limite de IA seja atingido ou ocorra um erro na API, o sistema utiliza automaticamente a biblioteca local de perguntas do banco de dados (SQLite).
+3.  **Persistência**: Todas as perguntas geradas via IA são salvas no banco com a origem `groq`, enriquecendo a base de dados continuamente.
+
+## 🛠️ Configuração da IA (Groq)
+
+Para habilitar a geração via IA:
+1.  Obtenha uma chave de API em [console.groq.com](https://console.groq.com/).
+2.  Adicione a chave no painel de **Secrets** do AI Studio com o nome `GROQ_API_KEY`.
+3.  O sistema detectará a chave automaticamente e ativará o modo inteligente.
 
 ## 🏗️ Estrutura do Projeto
 

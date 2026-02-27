@@ -1,5 +1,6 @@
 import { Router } from "express";
 import { DevTrainService } from "../application/services.js";
+import { GroqProvider } from "../infrastructure/groqClient.js";
 
 const router = Router();
 
@@ -36,12 +37,13 @@ router.get("/usuarios/ranking/:linguagemId", (req, res) => {
 // Perguntas
 router.get("/perguntas", (req, res) => {
   try {
-    const { linguagemId, modo, tipoEstudo, usuarioId } = req.query;
+    const { linguagemId, modo, tipoEstudo, usuarioId, quantidade } = req.query;
     const perguntas = DevTrainService.getPerguntas(
       parseInt(linguagemId as string),
       modo as string,
       tipoEstudo as string,
-      parseInt(usuarioId as string)
+      parseInt(usuarioId as string),
+      quantidade ? parseInt(quantidade as string) : undefined
     );
     res.json(perguntas);
   } catch (err: any) {
@@ -111,10 +113,51 @@ router.get("/linguagens", (req, res) => {
 
 router.post("/perguntas/bulk", (req, res) => {
   try {
-    const { linguagemId, perguntas } = req.body;
+    const { linguagemId, perguntas, origem } = req.body;
     if (!linguagemId || !perguntas) return res.status(400).json({ error: "Dados incompletos" });
-    const ids = DevTrainService.salvarPerguntasBulk(parseInt(linguagemId), perguntas);
+    const ids = DevTrainService.salvarPerguntasBulk(parseInt(linguagemId), perguntas, origem || 'manual');
     res.json({ success: true, ids });
+  } catch (err: any) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+router.post("/ia/gerar", async (req, res) => {
+  try {
+    const { linguagemId, linguagemNome, tags, dificuldade } = req.body;
+    
+    // 1. Check Rate Limit
+    const canGenerate = DevTrainService.checkAndIncrementIARateLimit();
+    
+    if (!canGenerate) {
+      return res.status(429).json({ 
+        error: "Limite diário de IA atingido.",
+        fallback: true,
+        message: "Utilizando perguntas da biblioteca local (Modo de Economia)."
+      });
+    }
+
+    // 2. Try to generate with Groq
+    try {
+      const perguntas = await GroqProvider.gerarPerguntas(linguagemNome, tags, dificuldade);
+      
+      if (perguntas && perguntas.length > 0) {
+        // Save to DB
+        DevTrainService.salvarPerguntasBulk(parseInt(linguagemId), perguntas, 'groq');
+        return res.json({ success: true, perguntas, source: 'groq' });
+      }
+    } catch (groqError: any) {
+      console.error("Groq Generation Error:", groqError);
+      // Fallback to local DB if Groq fails
+      return res.status(200).json({ 
+        success: false, 
+        fallback: true,
+        message: `Erro na IA: ${groqError.message}. Utilizando biblioteca local.`,
+        error: groqError.message
+      });
+    }
+
+    res.status(500).json({ error: "Falha na geração de perguntas." });
   } catch (err: any) {
     res.status(500).json({ error: err.message });
   }
